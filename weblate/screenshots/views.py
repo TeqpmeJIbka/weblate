@@ -19,6 +19,7 @@ from django.utils.translation import gettext
 from django.views.decorators.http import require_POST
 from django.views.generic import DetailView, ListView
 from PIL import Image
+from tesserocr import OEM, PSM, RIL, PyTessBaseAPI, iterate_level
 
 from weblate.logger import LOGGER
 from weblate.screenshots.forms import ScreenshotEditForm, ScreenshotForm, SearchForm
@@ -26,7 +27,6 @@ from weblate.screenshots.models import Screenshot
 from weblate.trans.models import Change, Component, Unit
 from weblate.utils import messages
 from weblate.utils.data import data_dir
-from weblate.utils.locale import c_locale
 from weblate.utils.lock import WeblateLock
 from weblate.utils.requests import request
 from weblate.utils.search import parse_query
@@ -35,8 +35,6 @@ from weblate.utils.views import PathViewMixin
 if TYPE_CHECKING:
     from weblate.lang.models import Language
 
-with c_locale():
-    from tesserocr import OEM, PSM, RIL, PyTessBaseAPI, iterate_level
 
 TESSERACT_LANGUAGES = {
     "af": "afr",  # Afrikaans
@@ -366,19 +364,27 @@ def search_source(request, pk):
 
 
 def ocr_get_strings(api, image: str, resolution: int = 72):
-    api.SetImageFile(image)
-    api.SetSourceResolution(resolution)
+    try:
+        api.SetImageFile(image)
+    except RuntimeError:
+        pass
+    else:
+        api.SetSourceResolution(resolution)
 
-    with sentry_sdk.start_span(op="ocr.recognize", description=image):
-        api.Recognize()
+        with sentry_sdk.start_span(op="ocr.recognize", description=image):
+            api.Recognize()
 
-    with sentry_sdk.start_span(op="ocr.iterate", description=image):
-        iterator = api.GetIterator()
-        level = RIL.TEXTLINE
-        for r in iterate_level(iterator, level):
-            with sentry_sdk.start_span(op="ocr.text", description=image):
-                yield r.GetUTF8Text(level)
-    api.Clear()
+        with sentry_sdk.start_span(op="ocr.iterate", description=image):
+            iterator = api.GetIterator()
+            level = RIL.TEXTLINE
+            for r in iterate_level(iterator, level):
+                with sentry_sdk.start_span(op="ocr.text", description=image):
+                    try:
+                        yield r.GetUTF8Text(level)
+                    except RuntimeError:
+                        continue
+    finally:
+        api.Clear()
 
 
 def ocr_extract(api, image: str, strings, resolution: int):
@@ -402,7 +408,7 @@ def get_tesseract(language: Language) -> PyTessBaseAPI:
 
     ensure_tesseract_language(tess_language)
 
-    with c_locale(), PyTessBaseAPI(
+    with PyTessBaseAPI(
         path=data_dir("cache", "tesseract") + "/",
         psm=PSM.SPARSE_TEXT_OSD,
         oem=OEM.LSTM_ONLY,

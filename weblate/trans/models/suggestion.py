@@ -20,14 +20,15 @@ from weblate.utils.state import STATE_TRANSLATED
 
 
 class SuggestionManager(models.Manager):
-    def add(self, unit, target, request, vote=False):
+    def add(self, unit, target, request, vote=False, user=None):
         """Create new suggestion for this unit."""
         from weblate.auth.models import get_anonymous
 
         if isinstance(target, (list, tuple)):
             target = join_plural(target)
 
-        user = request.user if request else get_anonymous()
+        if user is None:
+            user = request.user if request else get_anonymous()
 
         if unit.translated and unit.target == target:
             return False
@@ -67,6 +68,8 @@ class SuggestionManager(models.Manager):
         # Update suggestion stats
         if user is not None:
             user.profile.increase_count("suggested")
+
+        unit.invalidate_related_cache()
 
         return suggestion
 
@@ -163,8 +166,9 @@ class Suggestion(models.Model, UserDisplayMixin):
         self.delete()
 
     def delete(self, using=None, keep_parents=False):
+        result = super().delete(using=using, keep_parents=keep_parents)
         self.unit.invalidate_related_cache()
-        return super().delete(using=using, keep_parents=keep_parents)
+        return result
 
     def get_num_votes(self):
         """Return number of votes."""
@@ -183,7 +187,7 @@ class Suggestion(models.Model, UserDisplayMixin):
             vote.save()
 
         # Automatic accepting
-        required_votes = self.unit.translation.component.suggestion_autoaccept
+        required_votes = self.unit.translation.suggestion_autoaccept
         if required_votes and self.get_num_votes() >= required_votes:
             self.accept(request, "suggestion.vote")
 

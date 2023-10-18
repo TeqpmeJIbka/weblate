@@ -164,7 +164,6 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
         super().__init__(*args, **kwargs)
         self.stats = TranslationStats(self)
         self.addon_commit_files = []
-        self.was_new = 0
         self.reason = ""
         self._invalidate_scheduled = False
         self.update_changes = []
@@ -220,20 +219,6 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
                 gettext("Could not parse file %(file)s: %(error)s")
                 % {"file": self.filename, "error": str(error)}
             )
-
-    def notify_new(self, request):
-        if self.was_new:
-            # Create change after flags has been updated and cache
-            # invalidated, otherwise we might be sending notification
-            # with outdated values
-            Change.objects.create(
-                translation=self,
-                action=Change.ACTION_NEW_STRING,
-                user=request.user if request else None,
-                author=request.user if request else None,
-                details={"count": self.was_new},
-            )
-            self.was_new = 0
 
     def get_url_path(self):
         return (*self.component.get_url_path(), self.language.code)
@@ -329,18 +314,6 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
         ):
             newunit.update_from_unit(unit, pos, is_new)
 
-        # Check if unit is worth notification:
-        # - new and untranslated
-        # - newly untranslated
-        # - newly fuzzy
-        # - source string changed
-        if newunit.state < STATE_TRANSLATED and (
-            newunit.state != newunit.old_unit["state"]
-            or is_new
-            or newunit.source != newunit.old_unit["source"]
-        ):
-            self.was_new += 1
-
         # Store current unit ID
         updated[id_hash] = newunit
 
@@ -414,9 +387,6 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
                 if plural != self.plural:
                     self.plural = plural
                     self.save(update_fields=["plural"])
-
-                # Was there change?
-                self.was_new = 0
 
                 # Select all current units for update
                 dbunits = {
@@ -703,9 +673,7 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
                 extra_context={"translation": self},
             ):
                 self.log_info("committed %s as %s", self.filenames, author)
-                Change.objects.create(
-                    action=Change.ACTION_COMMIT, translation=self, user=user
-                )
+                self.change_set.create(action=Change.ACTION_COMMIT, user=user)
 
             # Store updated hash
             if store_hash:
@@ -769,10 +737,17 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
                     pounit.set_explanation(unit.explanation)
                     pounit.set_source_explanation(unit.source_unit.explanation)
                 except Exception as error:
-                    self.component.handle_parse_error(error, self, reraise=False)
                     report_error(
                         cause="Could not update unit", project=self.component.project
                     )
+                    unit.state = STATE_FUZZY
+                    # Use update instead of hitting expensive save()
+                    Unit.objects.filter(pk=unit.pk).update(state=STATE_FUZZY)
+                    unit.change_set.create(
+                        action=Change.ACTION_SAVE_FAILED,
+                        target=self.component.get_parse_error_message(error),
+                    )
+                    clear_pending.append(unit.pk)
                     continue
 
                 updated = True
@@ -827,9 +802,38 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
         store.save()
 
     @cached_property
+    def workflow_settings(self):
+        return self.component.project.project_languages[self.language].workflow_settings
+
+    @cached_property
     def enable_review(self):
         project = self.component.project
-        return project.source_review if self.is_source else project.translation_review
+        project_review = (
+            project.source_review if self.is_source else project.translation_review
+        )
+        if not project_review:
+            return False
+        if self.workflow_settings is not None:
+            return self.workflow_settings.translation_review
+        return project_review
+
+    @property
+    def enable_suggestions(self):
+        if self.workflow_settings is not None:
+            return self.workflow_settings.enable_suggestions
+        return self.component.enable_suggestions
+
+    @property
+    def suggestion_voting(self):
+        if self.workflow_settings is not None:
+            return self.workflow_settings.suggestion_voting
+        return self.component.suggestion_voting
+
+    @property
+    def suggestion_autoaccept(self):
+        if self.workflow_settings is not None:
+            return self.workflow_settings.suggestion_autoaccept
+        return self.component.suggestion_autoaccept
 
     @cached_property
     def list_translation_checks(self):
@@ -1155,8 +1159,6 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
             )
             existing.add(idkey)
             accepted += 1
-        self.was_new = accepted
-        self.notify_new(request)
         component.invalidate_cache()
         if component.needs_variants_update:
             component.update_variants()
@@ -1271,7 +1273,7 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
 
     def _invalidate_triger(self):
         self._invalidate_scheduled = False
-        self.stats.invalidate()
+        self.stats.update_stats()
         self.component.invalidate_glossary_cache()
 
     def invalidate_cache(self):
@@ -1312,8 +1314,8 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
                 self.component.push_if_needed()
 
         # Delete from the database
-        self.stats.invalidate()
         self.delete()
+        transaction.on_commit(self.stats.update_parents)
         transaction.on_commit(self.component.schedule_update_checks)
 
         # Record change
@@ -1335,7 +1337,6 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
             self.component.invalidate_cache()
         else:
             self.check_sync(request=request, change=change)
-            self.notify_new(request)
             self.invalidate_cache()
         # Trigger post-update signal
         self.component.trigger_post_update(previous_revision, False)
@@ -1505,8 +1506,6 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
                 )
             component.invalidate_cache()
             component_post_update.send(sender=self.__class__, component=component)
-            self.was_new = 1
-            self.notify_new(request)
         return result
 
     def notify_deletion(self, unit, user):
@@ -1583,7 +1582,6 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
         if not self.is_source or not self.component.manage_units:
             return
         expected_count = self.component.translation_set.count()
-        self.was_new = 0
         for source in self.component.get_all_sources():
             # Is the string a terminology
             if "terminology" not in source.all_flags:
@@ -1599,8 +1597,6 @@ class Translation(models.Model, URLMixin, LoggerMixin, CacheKeyMixin):
                 is_batch_update=True,
                 skip_existing=True,
             )
-            self.was_new += 1
-        self.notify_new(None)
 
     def validate_new_unit_data(
         self,

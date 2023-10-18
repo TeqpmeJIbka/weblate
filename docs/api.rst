@@ -1140,7 +1140,7 @@ Projects
 
    .. versionadded:: 5.0
 
-    Returns statistics for a project. See :http:get:`/api/categories/(int:id)/` for field definitions.
+    Returns categories for a project. See :http:get:`/api/categories/(int:id)/` for field definitions.
 
     :param project: Project URL slug
     :type project: string
@@ -1396,7 +1396,7 @@ Components
     :param component: Component URL slug
     :type component: string
 
-    :query string format: The archive format to use; If not specified, defaults to ``zip``; Supported formats: ``zip``
+    :query string format: The archive format to use; If not specified, defaults to ``zip``; Supported formats: ``zip`` and ``zip:CONVERSION`` where ``CONVERSION`` is one of converters listed at :ref:`download`.
 
 .. http:get::  /api/components/(string:project)/(string:component)/screenshots/
 
@@ -1931,7 +1931,7 @@ Translations
     :type component: string
     :param language: Translation language code
     :type language: string
-    :form string conflicts: How to deal with conflicts (``ignore``, ``replace-translated`` or ``replace-approved``)
+    :form string conflicts: How to deal with conflicts (``ignore``, ``replace-translated`` or ``replace-approved``), see :ref:`upload-conflicts`
     :form file file: Uploaded file
     :form string email: Author e-mail
     :form string author: Author name

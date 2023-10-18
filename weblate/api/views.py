@@ -69,6 +69,7 @@ from weblate.api.serializers import (
     UnitWriteSerializer,
     UploadRequestSerializer,
     UserStatisticsSerializer,
+    get_reverse_kwargs,
 )
 from weblate.auth.models import Group, Role, User
 from weblate.checks.models import Check
@@ -136,11 +137,9 @@ def get_view_description(view, html=False):
     description = formatting.dedent(description)
 
     if hasattr(getattr(view, "serializer_class", "None"), "Meta"):
-        doc_url = get_doc_url(
-            "api",
-            f"{view.serializer_class.Meta.model.__name__.lower()}s",
-            user=view.request.user,
-        )
+        model_name = view.serializer_class.Meta.model.__name__.lower()
+        doc_name = "categories" if model_name == "category" else f"{model_name}s"
+        doc_url = get_doc_url("api", doc_name, user=view.request.user)
     else:
         doc_url = get_doc_url("api", user=view.request.user)
 
@@ -285,18 +284,21 @@ class WeblateViewSet(DownloadViewSet):
                 component = obj.component
                 data["url"] = reverse(
                     "api:translation-repository",
-                    kwargs={
-                        "component__project__slug": component.project.slug,
-                        "component__slug": component.slug,
-                        "language__code": obj.language.code,
-                    },
+                    kwargs=get_reverse_kwargs(
+                        obj,
+                        (
+                            "component__project__slug",
+                            "component__slug",
+                            "language__code",
+                        ),
+                    ),
                     request=request,
                 )
             else:
                 component = obj
                 data["url"] = reverse(
                     "api:component-repository",
-                    kwargs={"project__slug": obj.project.slug, "slug": obj.slug},
+                    kwargs=get_reverse_kwargs(obj, ("project__slug", "slug")),
                     request=request,
                 )
 
@@ -801,6 +803,9 @@ class ComponentViewSet(
 ):
     """Translation components API."""
 
+    raw_urls: tuple[str, ...] = "component-file"
+    raw_formats = ("zip", *(f"zip:{exporter}" for exporter in EXPORTERS))
+
     queryset = Component.objects.none()
     serializer_class = ComponentSerializer
     lookup_fields = ("project__slug", "slug")
@@ -1001,8 +1006,8 @@ class ComponentViewSet(
         instance.links.remove(project)
         return Response(status=HTTP_204_NO_CONTENT)
 
-    @action(detail=True, methods=["get"], url_path="file")
-    def download_archive(self, request, **kwargs):
+    @action(detail=True, methods=["get"])
+    def file(self, request, **kwargs):
         # Implementation is analogous to files#download_component, but we can't reuse
         #  that here because the lookup for the component is different
         instance = self.get_object()
@@ -1013,6 +1018,7 @@ class ComponentViewSet(
 
         requested_format = request.query_params.get("format", "zip")
         return download_multi(
+            request,
             instance.translation_set.all(),
             [instance],
             requested_format,

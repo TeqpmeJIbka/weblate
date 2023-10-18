@@ -3,6 +3,7 @@
 {% load translations %}
 {% load crispy_forms_tags %}
 {% load metrics %}
+{% load permissions %}
 
 {% block breadcrumbs %}
 {% path_object_breadcrumbs path_object %}
@@ -11,6 +12,7 @@
 {% block content %}
 
 {% announcements language=language project=project %}
+{% perm 'project.edit' object.project as user_can_edit_project %}
 
 <ul class="nav nav-pills">
   <li class="active"><a href="#overview" data-toggle="tab">{% trans "Components" %}</a></li>
@@ -30,6 +32,9 @@
     </a>
     <ul class="dropdown-menu">
       <li><a href="{% url 'download' path=object.get_url_path %}?format=zip" title="{% trans "Download for offline translation." %}">{% blocktrans %}Download original translation files as ZIP file{% endblocktrans %}</a></li>
+      <li><a href="{% url 'download' path=object.get_url_path %}?format=zip:csv" title="{% trans "Download for offline translation." %}">{% blocktrans %}Download translations as CSV in a ZIP file{% endblocktrans %}</a></li>
+      <li><a href="{% url 'download' path=object.get_url_path %}?format=zip:xliff11" title="{% trans "Download for offline translation." %}">{% blocktrans %}Download translations as XLIFF 1.1 in a ZIP file{% endblocktrans %}</a></li>
+      <li><a href="{% url 'download' path=object.get_url_path %}?format=zip:xlsx" title="{% trans "Download for offline translation." %}">{% blocktrans %}Download translations as XLSX in a ZIP file{% endblocktrans %}</a></li>
     </ul>
   </li>
   <li class="dropdown">
@@ -50,6 +55,17 @@
       {% endif %}
     </ul>
    </li>
+    {% if user_can_edit_project %}
+    <li class="dropdown">
+        <a class="dropdown-toggle" data-toggle="dropdown" href="#">
+        {% trans "Manage" %} <span class="caret"></span>
+        </a>
+        <ul class="dropdown-menu">
+        <li><a href="{% url 'settings' path=object.get_url_path %}">{% trans "Settings" %}</a></li>
+        </ul>
+    </li>
+    {% endif %}
+    {% include "snippets/share-menu.html" with object=object %}
 {% include "snippets/watch-dropdown.html" %}
 </ul>
 

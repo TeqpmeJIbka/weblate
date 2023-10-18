@@ -106,19 +106,6 @@ def perform_push(pk, *args, **kwargs):
     component.do_push(*args, **kwargs)
 
 
-@app.task(trail=False)
-def update_component_stats(pk):
-    component = Component.objects.get(pk=pk)
-    component.stats.ensure_basic()
-    project_stats = component.project.stats
-    # Update language stats
-    for language in Language.objects.filter(
-        translation__component=component
-    ).iterator():
-        stats = project_stats.get_single_language_stats(language)
-        stats.ensure_basic()
-
-
 @app.task(
     trail=False,
     autoretry_for=(WeblateLockTimeoutError,),
@@ -358,8 +345,8 @@ def category_removal(pk, uid):
         return
     for child in category.category_set.all():
         category_removal(child.pk, uid)
-    for component in category.component_set.all():
-        component_removal(component.pk, uid)
+    for component_id in category.component_set.values_list("id", flat=True):
+        component_removal(component_id, uid)
     Change.objects.create(
         project=category.project,
         action=Change.ACTION_REMOVE_CATEGORY,
@@ -375,17 +362,17 @@ def project_removal(pk: int, uid: int | None):
     user = get_anonymous() if uid is None else User.objects.get(pk=uid)
     try:
         project = Project.objects.get(pk=pk)
-        create_project_backup(pk)
-        Change.objects.create(
-            action=Change.ACTION_REMOVE_PROJECT,
-            target=project.slug,
-            user=user,
-            author=user,
-        )
-        project.stats.invalidate()
-        project.delete()
     except Project.DoesNotExist:
         return
+    create_project_backup(pk)
+    Change.objects.create(
+        action=Change.ACTION_REMOVE_PROJECT,
+        target=project.slug,
+        user=user,
+        author=user,
+    )
+    project.delete()
+    transaction.on_commit(project.stats.update_parents)
 
 
 @app.task(

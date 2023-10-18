@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import datetime
+from urllib.parse import urlparse
 
 from appconf import AppConf
 from django.conf import settings
@@ -165,6 +166,8 @@ ACCOUNT_ACTIVITY = {
         "translations uploaded by other user."
     ),
     "blocked": gettext_lazy("Access to project {project} was blocked"),
+    "enabled": gettext_lazy("User was enabled by administrator"),
+    "disabled": gettext_lazy("User was disabled by administrator"),
 }
 # Override activity messages based on method
 ACCOUNT_ACTIVITY_METHOD = {
@@ -185,6 +188,12 @@ EXTRA_MESSAGES = {
     ),
     "blocked": gettext_lazy(
         "Please contact project maintainers if you feel this is inappropriate."
+    ),
+    "register": gettext_lazy(
+        "If it was you, please use a password reset to regain access to your account."
+    ),
+    "connect": gettext_lazy(
+        "If it was you, please use a password reset to regain access to your account."
     ),
 }
 
@@ -561,7 +570,7 @@ class Profile(models.Model):
         db_index=False,
     )
     twitter = models.SlugField(
-        verbose_name=gettext_lazy("Twitter username"),
+        verbose_name=gettext_lazy("X username"),
         blank=True,
         db_index=False,
     )
@@ -614,6 +623,14 @@ class Profile(models.Model):
 
     def get_user_name(self):
         return get_user_display(self.user, False)
+
+    def get_fediverse_share(self):
+        if not self.fediverse:
+            return None
+        parsed = urlparse(self.fediverse)
+        if not parsed.hostname:
+            return None
+        return parsed._replace(path="/share", query="text=", fragment="").geturl()
 
     def increase_count(self, item: str, increase: int = 1):
         """Updates user actions counter."""

@@ -9,6 +9,7 @@ import subprocess
 from contextlib import suppress
 from itertools import chain
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils.functional import cached_property
 from django.utils.translation import gettext
@@ -49,6 +50,8 @@ class BaseAddon:
     alert: str | None = None
     trigger_update = False
     stay_on_create = False
+    user_name = ""
+    user_verbose = ""
 
     def __init__(self, storage=None):
         self.instance = storage
@@ -106,9 +109,9 @@ class BaseAddon:
     def get_ui_form(self):
         return self.get_settings_form(None)
 
-    def configure(self, settings):
+    def configure(self, configuration):
         """Save configuration."""
-        self.instance.configuration = settings
+        self.instance.configuration = configuration
         self.instance.save()
         self.post_configure()
 
@@ -120,9 +123,10 @@ class BaseAddon:
         self.instance.configure_events(self.events)
 
         if run:
-            postconfigure_addon.delay(self.instance.pk)
-            # Flush cache in case this was eager mode
-            component.repository.clean_revision_cache()
+            if settings.CELERY_TASK_ALWAYS_EAGER:
+                postconfigure_addon(self.instance.pk, self.instance)
+            else:
+                postconfigure_addon.delay(self.instance.pk)
 
     def post_configure_run(self):
         # Trigger post events to ensure direct processing
@@ -328,6 +332,20 @@ class BaseAddon:
                         "expected results until you update it."
                     ),
                 )
+
+    @cached_property
+    def user(self):
+        """Weblate user used to track changes by this add-on."""
+        from weblate.auth.models import User
+
+        if not self.user_name or not self.user_verbose:
+            raise ValueError(
+                f"{self.__class__.__name__} is missing user_name and user_verbose!"
+            )
+
+        return User.objects.get_or_create_bot(
+            "addon", self.user_name, self.user_verbose
+        )
 
 
 class TestAddon(BaseAddon):

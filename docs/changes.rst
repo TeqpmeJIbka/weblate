@@ -1,10 +1,38 @@
-Weblate 5.1
------------
+Weblate 5.1.1
+-------------
 
 Not yet released.
 
 **New features**
+
+**Improvements**
+
+* :ref:`addon-weblate.consistency.languages` now uses a dedicated user for changes.
+* Added button for sharing on Fediverse.
+* Added valication for VCS integration credentials.
+
+**Bug fixes**
+
+**Compatibility**
+
+**Upgrading**
+
+Please follow :ref:`generic-upgrade-instructions` in order to perform update.
+
+`All changes in detail <https://github.com/WeblateOrg/weblate/milestone/106?closed=1>`__.
+
+Weblate 5.1
+-----------
+
+Released on October 16th 2023.
+
+**New features**
+
 * :ref:`mt-yandex-v2` machine translation service.
+* :ref:`addon-weblate.autotranslate.autotranslate` and :ref:`auto-translation` are now stored with a dedicated user as an author.
+* :ref:`addons` changes to strings are now stored with a dedicated user as an author.
+* :ref:`download-multi` can now convert file formats.
+* :ref:`workflow-customization` allows to fine-tune localization workflow per language.
 
 **Improvements**
 
@@ -12,10 +40,27 @@ Not yet released.
 * Project is added to watched upon accepting an invitation.
 * Configure VCS API credentials as a Python dict from environment variables.
 * Improved accuracy of checks on plural messages.
+* Engage page better shows stats.
+* Strings which can not be saved to a file no longer block other strings to be written.
+* Fixed some API URLs for categorized components.
+* Show plural form examples more prominently.
+* Highlight whitespace in :ref:`machine-translation`.
+* Faster comment and component removal.
+* Show disabled save button reason more prominently.
+* New string notification can now be triggered for each string.
 
 **Bug fixes**
 
+* Improved OCR error handling in :ref:`screenshots`.
+* :ref:`autofix` gracefully handle strings from :ref:`multivalue-csv`.
+* Occasional crash in :ref:`machine-translation` caching.
+* Fixed history listing for entries within a :ref:`category`.
+* Fixed editing :guilabel:`Administration` team.
+* :ref:`addon-weblate.consistency.languages` add-on could miss some languages.
+
 **Compatibility**
+
+* Categories are now included ``weblate://`` repository URLs.
 
 **Upgrading**
 

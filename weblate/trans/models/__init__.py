@@ -4,6 +4,7 @@
 
 import os
 
+from django.db import transaction
 from django.db.models.signals import m2m_changed, post_delete, post_save
 from django.dispatch import receiver
 
@@ -22,6 +23,7 @@ from weblate.trans.models.suggestion import Suggestion, Vote
 from weblate.trans.models.translation import Translation
 from weblate.trans.models.unit import Unit
 from weblate.trans.models.variant import Variant
+from weblate.trans.models.workflow import WorkflowSetting
 from weblate.trans.signals import user_pre_delete
 from weblate.utils.decorators import disable_for_loaddata
 from weblate.utils.files import remove_tree
@@ -43,6 +45,7 @@ __all__ = [
     "Alert",
     "Variant",
     "Label",
+    "WorkflowSetting",
 ]
 
 
@@ -56,8 +59,8 @@ def delete_object_dir(instance):
 @receiver(post_delete, sender=Project)
 def project_post_delete(sender, instance, **kwargs):
     """Handler to delete (sub)project directory on project deletion."""
-    # Invalidate stats
-    instance.stats.invalidate()
+    # Update stats
+    transaction.on_commit(instance.stats.update_parents)
 
     # Remove directory
     delete_object_dir(instance)
@@ -66,8 +69,8 @@ def project_post_delete(sender, instance, **kwargs):
 @receiver(post_delete, sender=Component)
 def component_post_delete(sender, instance, **kwargs):
     """Handler to delete (sub)project directory on project deletion."""
-    # Invalidate stats
-    instance.stats.invalidate()
+    # Update stats
+    transaction.on_commit(instance.stats.update_parents)
 
     # Do not delete linked components
     if not instance.is_repo_link:
@@ -113,7 +116,7 @@ def user_commit_pending(sender, instance, **kwargs):
 def change_componentlist(sender, instance, action, **kwargs):
     if not action.startswith("post_"):
         return
-    instance.stats.invalidate()
+    transaction.on_commit(instance.stats.update_stats)
 
 
 @receiver(post_save, sender=AutoComponentList)

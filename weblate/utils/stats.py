@@ -4,15 +4,16 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
 from copy import copy
 from datetime import timedelta
 from itertools import chain
 from types import GeneratorType
 
 import sentry_sdk
+from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import Length
 from django.urls import reverse
@@ -26,6 +27,7 @@ from weblate.trans.mixins import BaseURLMixin
 from weblate.trans.util import translation_percent
 from weblate.utils.db import conditional_sum
 from weblate.utils.random import get_random_identifier
+from weblate.utils.site import get_site_url
 from weblate.utils.state import (
     STATE_APPROVED,
     STATE_EMPTY,
@@ -114,6 +116,7 @@ class BaseStats:
         self._object = obj
         self._data = None
         self._pending_save = False
+        self.last_change_cache = None
 
     @property
     def pk(self):
@@ -202,23 +205,24 @@ class BaseStats:
     def load(self):
         return cache.get(self.cache_key, {})
 
-    def save(self):
+    def save(self, update_parents: bool = True):
         """Save stats to cache."""
         cache.set(self.cache_key, self._data, 30 * 86400)
 
-    def get_invalidate_keys(
-        self,
-        language: Language | None = None,
-        childs: bool = False,
-        parents: bool = True,
-    ):
-        return {self.cache_key, GlobalStats().cache_key}
+    def get_update_objects(self):
+        yield GlobalStats()
 
-    def invalidate(self, language: Language | None = None, childs: bool = False):
-        """Invalidate local and cache data."""
-        self.clear()
-        keys = self.get_invalidate_keys(language, childs)
-        cache.delete_many(keys)
+    def update_parents(self, extra_objects: list[BaseStats] | None = None):
+        # Get unique list of stats to update.
+        # This preserves ordering so that closest ones are updated first.
+        stat_objects = {stat.cache_key: stat for stat in self.get_update_objects()}
+        if extra_objects:
+            for stat in extra_objects:
+                stat_objects[stat.cache_key] = stat
+
+        # Update stats
+        for stat in stat_objects.values():
+            stat.update_stats()
 
     def clear(self):
         """Clear local cache."""
@@ -236,7 +240,7 @@ class BaseStats:
         """Calculate stats for translation."""
         raise NotImplementedError
 
-    def ensure_basic(self, save=True):
+    def ensure_basic(self, save: bool = True):
         """Ensure we have basic stats."""
         # Prefetch basic stats at once
         if self._data is None:
@@ -247,6 +251,14 @@ class BaseStats:
                 self.save()
             return True
         return False
+
+    def update_stats(self, update_parents: bool = True):
+        self._data = {}
+        if settings.STATS_LAZY:
+            self.save(update_parents=False)
+        else:
+            self.prefetch_basic()
+            self.save(update_parents=update_parents)
 
     def prefetch_basic(self):
         with sentry_sdk.start_span(
@@ -324,7 +336,7 @@ class DummyTranslationStats(BaseStats):
     def cache_key(self):
         return None
 
-    def save(self):
+    def save(self, update_parents: bool = True):
         return
 
     def load(self):
@@ -340,26 +352,31 @@ class DummyTranslationStats(BaseStats):
 class TranslationStats(BaseStats):
     """Per translation stats."""
 
-    def get_invalidate_keys(
-        self,
-        language: Language | None = None,
-        childs: bool = False,
-        parents: bool = True,
-    ):
-        result = super().get_invalidate_keys(language, childs, parents)
-        # Happens when deleting language from the admin interface
-        with suppress(ObjectDoesNotExist):
-            result.update(self._object.language.stats.get_invalidate_keys())
+    def save(self, update_parents: bool = True):
+        from weblate.utils.tasks import update_translation_stats_parents
 
-        if parents:
-            # Happens when deleting language from the admin interface
-            with suppress(ObjectDoesNotExist):
-                result.update(
-                    self._object.component.stats.get_invalidate_keys(
-                        language=self._object.language
-                    )
-                )
-        return result
+        super().save()
+
+        if settings.CELERY_TASK_ALWAYS_EAGER:
+            transaction.on_commit(self.update_parents)
+        else:
+            pk = self._object.pk
+            transaction.on_commit(lambda: update_translation_stats_parents.delay(pk))
+
+    def get_update_objects(self):
+        yield self._object.language.stats
+        yield from self._object.language.stats.get_update_objects()
+
+        yield self._object.component.stats
+        yield from self._object.component.stats.get_update_objects()
+
+        project_language = ProjectLanguage(
+            project=self._object.component.project, language=self._object.language
+        )
+        yield project_language.stats
+        yield from project_language.stats.get_update_objects()
+
+        yield from super().get_update_objects()
 
     @property
     def language(self):
@@ -469,6 +486,10 @@ class TranslationStats(BaseStats):
 
     def get_last_change_obj(self):
         from weblate.trans.models import Change
+
+        # This is set in Change.save
+        if self.last_change_cache is not None:
+            return self.last_change_cache
 
         cache_key = Change.get_last_change_cache_key(self._object.pk)
         change_pk = cache.get(cache_key)
@@ -613,7 +634,7 @@ class LanguageStats(BaseStats):
 
     @cached_property
     def translation_set(self):
-        return prefetch_stats(self._object.translation_set.iterator())
+        return prefetch_stats(self._object.translation_set.all())
 
     def calculate_source(self, stats_obj, stats):
         stats["source_chars"] += stats_obj.all_chars
@@ -663,7 +684,7 @@ class ComponentStats(LanguageStats):
     @cached_property
     def translation_set(self):
         return prefetch_stats(
-            self._object.translation_set.select_related("language").iterator()
+            self._object.translation_set.select_related("language").all()
         )
 
     @cached_property
@@ -686,8 +707,8 @@ class ComponentStats(LanguageStats):
     def save_lazy_translated_percent(self):
         cache.set(self.lazy_translated_percent_key, self.translated_percent, 30 * 86400)
 
-    def save(self):
-        super().save()
+    def save(self, update_parents: bool = True):
+        super().save(update_parents=update_parents)
         self.save_lazy_translated_percent()
 
     def calculate_source(self, stats_obj, stats):
@@ -705,23 +726,33 @@ class ComponentStats(LanguageStats):
             self.store("source_words", stats_obj.all_words)
             self.store("source_strings", stats_obj.all)
 
-    def get_invalidate_keys(
-        self,
-        language: Language | None = None,
-        childs: bool = False,
-        parents: bool = True,
-    ):
-        result = super().get_invalidate_keys(language, childs, parents)
-        if parents:
-            result.update(self._object.project.stats.get_invalidate_keys(language))
-            if self._object.category:
-                result.update(self._object.category.stats.get_invalidate_keys(language))
-            for clist in self._object.componentlist_set.iterator():
-                result.update(clist.stats.get_invalidate_keys())
-        if childs:
-            for translation in self.translation_set:
-                result.update(translation.stats.get_invalidate_keys(parents=False))
-        return result
+    def get_update_objects(self):
+        yield self._object.project.stats
+        yield from self._object.project.stats.get_update_objects()
+
+        if self._object.category:
+            yield self._object.category.stats
+            yield from self._object.category.stats.get_update_objects()
+
+        for clist in self._object.componentlist_set.all():
+            yield clist.stats
+            yield from clist.stats.get_update_objects()
+
+        yield from super().get_update_objects()
+
+    def update_language_stats(self):
+        extras = []
+
+        # Update languages
+        for translation in self.translation_set:
+            translation.stats.update_stats(update_parents=False)
+            extras.extend(translation.stats.get_update_objects())
+
+        # Update our stats
+        self.update_stats()
+
+        # Update all parents
+        self.update_parents(extras)
 
     def get_language_stats(self):
         yield from (
@@ -759,6 +790,7 @@ class ProjectLanguage(BaseURLMixin):
     """Wrapper class used in project-language listings and stats."""
 
     remove_permission = "translation.delete"
+    settings_permission = "project.edit"
 
     def __init__(self, project, language: Language):
         self.project = project
@@ -775,6 +807,19 @@ class ProjectLanguage(BaseURLMixin):
     @cached_property
     def stats(self):
         return ProjectLanguageStats(self)
+
+    def get_share_url(self):
+        """Return absolute URL usable for sharing."""
+        return get_site_url(
+            reverse(
+                "engage",
+                kwargs={"path": self.get_url_path()},
+            )
+        )
+
+    def get_widgets_url(self):
+        """Return absolute URL for widgets."""
+        return f"{self.project.get_widgets_url()}?lang={self.language.code}"
 
     @cached_property
     def pk(self):
@@ -817,6 +862,24 @@ class ProjectLanguage(BaseURLMixin):
     @cached_property
     def change_set(self):
         return self.project.change_set.filter(language=self.language)
+
+    @cached_property
+    def workflow_settings(self):
+        from weblate.trans.models.workflow import WorkflowSetting
+
+        workflow_settings = WorkflowSetting.objects.filter(
+            Q(project=None) | Q(project=self.project),
+            language=self.language,
+        )
+        if len(workflow_settings) == 0:
+            return None
+        if len(workflow_settings) == 1:
+            return workflow_settings[0]
+        # We should have two objects here, return project specific one
+        for workflow_setting in workflow_settings:
+            if workflow_setting.project_id == self.project.id:
+                return workflow_setting
+        raise WorkflowSetting.DoesNotExist
 
 
 class ProjectLanguageStats(LanguageStats):
@@ -1010,27 +1073,15 @@ class CategoryLanguageStats(LanguageStats):
 class CategoryStats(BaseStats):
     basic_keys = SOURCE_KEYS
 
-    def get_invalidate_keys(
-        self,
-        language: Language | None = None,
-        childs: bool = False,
-        parents: bool = True,
-    ):
-        result = super().get_invalidate_keys(language, childs, parents)
-        if parents:
-            result.update(self._object.project.stats.get_invalidate_keys(language))
-            if self._object.category:
-                result.update(self._object.category.stats.get_invalidate_keys(language))
-            if language:
-                result.update(
-                    self.get_single_language_stats(language).get_invalidate_keys()
-                )
-            else:
-                for lang in self._object.languages:
-                    result.update(
-                        self.get_single_language_stats(lang).get_invalidate_keys()
-                    )
-        return result
+    def get_update_objects(self):
+        yield self._object.project.stats
+        yield from self._object.project.stats.get_update_objects()
+
+        if self._object.category:
+            yield self._object.category.stats
+            yield from self._object.category.stats.get_update_objects()
+
+        yield from super().get_update_objects()
 
     @cached_property
     def component_set(self):
@@ -1083,25 +1134,6 @@ class ProjectStats(BaseStats):
     @cached_property
     def has_review(self):
         return self._object.enable_review
-
-    def get_invalidate_keys(
-        self,
-        language: Language | None = None,
-        childs: bool = False,
-        parents: bool = True,
-    ):
-        result = super().get_invalidate_keys(language, childs, parents)
-        if parents:
-            if language:
-                result.update(
-                    self.get_single_language_stats(language).get_invalidate_keys()
-                )
-            else:
-                for lang in self._object.languages:
-                    result.update(
-                        self.get_single_language_stats(lang).get_invalidate_keys()
-                    )
-        return result
 
     @cached_property
     def category_set(self):
@@ -1188,7 +1220,7 @@ class GlobalStats(BaseStats):
     def project_set(self):
         from weblate.trans.models import Project
 
-        return prefetch_stats(Project.objects.iterator())
+        return prefetch_stats(Project.objects.all())
 
     def _prefetch_basic(self):
         stats = zero_stats(self.basic_keys)
@@ -1246,7 +1278,7 @@ class GhostStats(BaseStats):
     def cache_key(self):
         return "stats-zero"
 
-    def save(self):
+    def save(self, update_parents: bool = True):
         return
 
     def load(self):

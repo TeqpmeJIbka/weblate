@@ -424,9 +424,47 @@ class LanguagesViewTest(FixtureTestCase):
         self.user.save()
         response = self.client.post(
             reverse("edit-language", kwargs={"pk": language.pk}),
-            {"code": "xx", "name": "XX", "direction": "ltr", "population": 10},
+            {
+                "code": "xx",
+                "name": "XX",
+                "direction": "ltr",
+                "population": 10,
+                "workflow-suggestion_autoaccept": 0,
+            },
         )
         self.assertRedirects(response, reverse("show_language", kwargs={"lang": "xx"}))
+
+    def test_edit_workflow(self):
+        language = Language.objects.get(code="cs")
+        self.user.is_superuser = True
+        self.user.save()
+        response = self.client.post(
+            reverse("edit-language", kwargs={"pk": language.pk}),
+            {
+                "code": "xx",
+                "name": "XX",
+                "direction": "ltr",
+                "population": 10,
+                "workflow-enable": 1,
+                "workflow-translation_review": 1,
+                "workflow-suggestion_autoaccept": 0,
+            },
+        )
+        self.assertRedirects(response, reverse("show_language", kwargs={"lang": "xx"}))
+        self.assertTrue(language.workflowsetting_set.exists())
+        response = self.client.post(
+            reverse("edit-language", kwargs={"pk": language.pk}),
+            {
+                "code": "xx",
+                "name": "XX",
+                "direction": "ltr",
+                "population": 10,
+                "workflow-translation_review": 1,
+                "workflow-suggestion_autoaccept": 0,
+            },
+        )
+        self.assertRedirects(response, reverse("show_language", kwargs={"lang": "xx"}))
+        self.assertFalse(language.workflowsetting_set.exists())
 
     def test_edit_plural(self):
         language = Language.objects.get(code="cs")
@@ -474,7 +512,7 @@ class PluralTest(BaseTestCase):
         plural = Plural(number=2, formula="n!=1")
         self.assertEqual(
             plural.examples,
-            {0: ["1"], 1: ["0", "2", "3", "4", "5", "6", "7", "8", "9", "10"]},
+            {0: ["1"], 1: ["0", "2", "3", "4", "5", "6", "7", "8", "9", "10", "…"]},
         )
 
     def test_plurals(self):

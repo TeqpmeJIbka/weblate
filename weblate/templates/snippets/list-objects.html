@@ -24,7 +24,7 @@
             {% endif %}
           {% elif add_link == "component-category" %}
             {% if user_can_edit_project %}
-              <a class="btn btn-link btn-sm" id="list-add-button" href="{% url 'create-component' %}?project={{ object.project.pk}}&amp;categry={{ object.pk }}" title="{% trans "Add new translation component" %}">{% icon "plus.svg" %}</a>
+              <a class="btn btn-link btn-sm" id="list-add-button" href="{% url 'create-component' %}?project={{ object.project.pk}}&amp;category={{ object.pk }}" title="{% trans "Add new translation component" %}">{% icon "plus.svg" %}</a>
             {% endif %}
           {% elif add_link == "language" %}
             {% if user_can_add_language %}
@@ -237,6 +237,9 @@
     {% endspaceless %}</a>
 {% endif %}
 {% indicate_alerts object %}
+{% if custom_workflows and object.pk in custom_workflows %}
+  <span class="badge">{% translate "Customized workflow" %}</span>
+{% endif %}
 </th>
 {% if project and project.enable_review %}
   {% include "snippets/list-objects-percent.html" with percent=object.stats.approved_percent value=object.stats.approved query="q=state:>=approved" all=object.stats.all class="zero-width-540" %}

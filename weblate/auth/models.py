@@ -14,9 +14,11 @@ import sentry_sdk
 from appconf import AppConf
 from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
+from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import Group as DjangoGroup
 from django.db import models
-from django.db.models import Prefetch, Q
+from django.db.models import Prefetch, Q, UniqueConstraint
+from django.db.models.functions import Upper
 from django.db.models.signals import m2m_changed, post_save
 from django.dispatch import receiver
 from django.http import Http404
@@ -228,6 +230,18 @@ class UserManager(BaseUserManager):
 
         return self._create_user(username, email, password, **extra_fields)
 
+    def get_or_create_bot(self, scope: str, username: str, verbose: str):
+        return self.get_or_create(
+            username=f"{scope}:{username}",
+            defaults={
+                "is_bot": True,
+                "full_name": verbose,
+                "email": f"noreply-{scope}-{username}@weblate.org",
+                "is_active": False,
+                "password": make_password(None),
+            },
+        )[0]
+
 
 class UserQuerySet(models.QuerySet):
     def having_perm(self, perm, project):
@@ -387,11 +401,20 @@ class User(AbstractBaseUser):
     class Meta:
         verbose_name = "User"
         verbose_name_plural = "Users"
+        constraints = [
+            UniqueConstraint(Upper("username"), name="weblate_auth_user_username_ci"),
+            UniqueConstraint(Upper("email"), name="weblate_auth_user_email_ci"),
+        ]
 
     def __str__(self):
         return self.full_name
 
     def save(self, *args, **kwargs):
+        from weblate.accounts.models import AuditLog
+
+        original = None
+        if self.pk:
+            original = User.objects.get(pk=self.pk)
         if self.is_anonymous:
             self.is_active = False
         # Generate full name from parts
@@ -407,6 +430,17 @@ class User(AbstractBaseUser):
             self.email = None
         super().save(*args, **kwargs)
         self.clear_cache()
+        if (
+            original
+            and original.is_active != self.is_active
+            and self.full_name != "Deleted User"
+            and not self.is_anonymous
+        ):
+            AuditLog.objects.create(
+                user=self,
+                request=None,
+                activity="enabled" if self.is_active else "disabled",
+            )
 
     def get_absolute_url(self):
         return reverse("user_page", kwargs={"user": self.username})
@@ -489,7 +523,7 @@ class User(AbstractBaseUser):
         """Permission check."""
         # Weblate global scope permissions
         if perm in GLOBAL_PERM_NAMES:
-            return check_global_permission(self, perm, obj)
+            return check_global_permission(self, perm)
 
         # Compatibility API for admin interface
         if is_django_permission(perm):

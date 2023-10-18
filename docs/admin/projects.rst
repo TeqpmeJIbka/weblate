@@ -43,6 +43,11 @@ permission, and if your instance uses billing (e.g. like
 https://hosted.weblate.org/ see :ref:`billing`), you can also create those
 based on your plans allowance from the user account that manages billing.
 
+.. hint::
+
+   To grant every user permission to create new projects create new
+   :ref:`autoteam` for the :guilabel:`Project creators` team.
+
 You can view your current billing plan on a separate page:
 
 .. image:: /screenshots/user-billing.webp
@@ -201,6 +206,10 @@ Enable reviews
 ++++++++++++++
 
 Enable review workflow for translations, see :ref:`reviews`.
+
+.. seealso::
+
+   :ref:`workflow-customization`
 
 .. _project-source_review:
 
@@ -476,7 +485,14 @@ Base file containing string definitions for :ref:`monolingual`.
 Edit base file
 ++++++++++++++
 
-Whether to allow editing the base file for :ref:`monolingual`.
+Whether to allow editing strings in the :ref:`component-template`.
+
+.. seealso::
+
+   :ref:`bimono`,
+   :ref:`monolingual`,
+   :ref:`faq-duplicate-files`,
+   :ref:`component-manage_units`
 
 .. _component-intermediate:
 
@@ -541,6 +557,9 @@ Source string bug reporting address
 Email address used for reporting upstream bugs. This address will also receive
 notification about any source string comments made in Weblate.
 
+With the :ref:`gettext` format, this address is also saved by Weblate in the
+:mailheader:`Report-Msgid-Bugs-To` header of the file.
+
 .. _component-allow_translation_propagation:
 
 Allow translation propagation
@@ -566,6 +585,10 @@ Enable suggestions
 
 Whether translation suggestions are accepted for this component.
 
+.. seealso::
+
+   :ref:`workflow-customization`
+
 .. _component-suggestion_voting:
 
 Suggestion voting
@@ -573,12 +596,20 @@ Suggestion voting
 
 Turns on vote casting for suggestions, see :ref:`voting`.
 
+.. seealso::
+
+   :ref:`workflow-customization`
+
 .. _component-suggestion_autoaccept:
 
 Autoaccept suggestions
 ++++++++++++++++++++++
 
 Automatically accept voted suggestions, see :ref:`voting`.
+
+.. seealso::
+
+   :ref:`workflow-customization`
 
 .. _component-check_flags:
 
@@ -667,6 +698,11 @@ it does not enforce the strings in all translations to be consistent.
 For monolingual formats, the strings are managed only on source language and
 are automatically added or removed in the translations. The strings appear in
 the translation files once they are translated.
+
+.. hint::
+
+   You might want to turn on :ref:`component-edit_template` together with
+   :guilabel:`Manage strings` for monolingual formats.
 
 .. seealso::
 

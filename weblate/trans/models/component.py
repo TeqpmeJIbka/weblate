@@ -269,8 +269,13 @@ class ComponentQuerySet(models.QuerySet):
         """Return component for linked repo."""
         if not is_repo_link(val):
             return None
-        project, component = val[10:].split("/", 1)
-        return self.get(slug__iexact=component, project__slug__iexact=project)
+        project, *categories, component = val[10:].split("/")
+        kwargs = {}
+        prefix = ""
+        for category in reversed(categories):
+            kwargs[f"{prefix}category__slug"] = category
+            prefix = f"category__{prefix}"
+        return self.get(slug__iexact=component, project__slug__iexact=project, **kwargs)
 
     def order_project(self):
         """Ordering in global scope by project name."""
@@ -511,11 +516,13 @@ class Component(models.Model, PathMixin, CacheKeyMixin, ComponentCategoryMixin):
             "will cause automatic translation in this one"
         ),
     )
+    # This should match definition in WorkflowSetting
     enable_suggestions = models.BooleanField(
         verbose_name=gettext_lazy("Turn on suggestions"),
         default=True,
         help_text=gettext_lazy("Whether to allow translation suggestions at all."),
     )
+    # This should match definition in WorkflowSetting
     suggestion_voting = models.BooleanField(
         verbose_name=gettext_lazy("Suggestion voting"),
         default=False,
@@ -523,6 +530,7 @@ class Component(models.Model, PathMixin, CacheKeyMixin, ComponentCategoryMixin):
             "Users can only vote for suggestions and can’t make direct translations."
         ),
     )
+    # This should match definition in WorkflowSetting
     suggestion_autoaccept = models.PositiveSmallIntegerField(
         verbose_name=gettext_lazy("Autoaccept suggestions"),
         default=0,
@@ -817,7 +825,11 @@ class Component(models.Model, PathMixin, CacheKeyMixin, ComponentCategoryMixin):
             # Detect slug changes and rename Git repo
             self.check_rename(old)
             # Rename linked repos
-            if old.slug != self.slug or old.project != self.project:
+            if (
+                old.slug != self.slug
+                or old.project != self.project
+                or old.category != self.category
+            ):
                 old.component_set.update(repo=self.get_repo_link_url())
             if changed_git:
                 self.drop_repository_cache()
@@ -1881,7 +1893,7 @@ class Component(models.Model, PathMixin, CacheKeyMixin, ComponentCategoryMixin):
             return False
 
     def get_repo_link_url(self):
-        return f"weblate://{self.project.slug}/{self.slug}"
+        return "weblate://{}".format("/".join(self.get_url_path()))
 
     @cached_property
     def linked_childs(self):
@@ -2010,15 +2022,19 @@ class Component(models.Model, PathMixin, CacheKeyMixin, ComponentCategoryMixin):
 
             return True
 
-    def handle_parse_error(
-        self, error, translation=None, filename=None, reraise: bool = True
-    ):
-        """Handler for parse errors."""
+    def get_parse_error_message(self, error) -> str:
         error_message = getattr(error, "strerror", "")
         if not error_message:
             error_message = getattr(error, "message", "")
         if not error_message:
             error_message = str(error).replace(self.full_path, "")
+        return error_message
+
+    def handle_parse_error(
+        self, error, translation=None, filename=None, reraise: bool = True
+    ):
+        """Handler for parse errors."""
+        error_message = self.get_parse_error_message(error)
         if filename is None:
             filename = self.template if translation is None else translation.filename
         self.trigger_alert("ParseError", error=error_message, filename=filename)
@@ -2471,10 +2487,6 @@ class Component(models.Model, PathMixin, CacheKeyMixin, ComponentCategoryMixin):
 
             transaction.on_commit(lambda: cleanup_component.delay(self.id))
 
-        # Send notifications on new string
-        for translation in translations.values():
-            translation.notify_new(request)
-
         if was_change:
             if self.needs_variants_update:
                 self.update_variants()
@@ -2504,12 +2516,9 @@ class Component(models.Model, PathMixin, CacheKeyMixin, ComponentCategoryMixin):
         self.batched_checks = set()
 
     def _invalidate_triger(self):
-        from weblate.trans.tasks import update_component_stats
-
         self._invalidate_scheduled = False
         self.log_info("updating stats caches")
-        self.stats.invalidate(childs=True)
-        update_component_stats.delay(self.pk)
+        self.stats.update_language_stats()
         self.invalidate_glossary_cache()
 
     def invalidate_cache(self):
